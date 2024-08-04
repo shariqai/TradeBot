@@ -1,4 +1,3 @@
-# src/mathematical_techniques.py
 import numpy as np
 from scipy.stats import norm
 
@@ -12,6 +11,8 @@ def black_scholes(S, K, T, r, sigma, option_type='call'):
         return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
     elif option_type == 'put':
         return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+    else:
+        raise ValueError("Invalid option type. Use 'call' or 'put'.")
 
 def monte_carlo_simulation(S, K, T, r, sigma, num_simulations=10000):
     """
