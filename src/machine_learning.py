@@ -20,16 +20,56 @@ from email.mime.multipart import MIMEMultipart
 from twilio.rest import Client
 from datetime import datetime
 import matplotlib.pyplot as plt
+import sqlalchemy
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import os
+from cryptography.fernet import Fernet
 
 # Twilio configuration
-TWILIO_ACCOUNT_SID = 'your_twilio_account_sid'
-TWILIO_AUTH_TOKEN = 'your_twilio_auth_token'
-TWILIO_PHONE_NUMBER = 'your_twilio_phone_number'
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
+TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
 TO_PHONE_NUMBER = '+16465587623'
 
 # Email configuration
-EMAIL_ADDRESS = 'shrqshhb@gmail.com'
-EMAIL_PASSWORD = 'your_email_password'
+EMAIL_ADDRESS = os.getenv('EMAIL_ADDRESS')
+EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')
+
+# Database configuration
+DATABASE_URI = os.getenv('DATABASE_URI', 'postgresql://username:password@localhost/stock_recommendations')
+engine = create_engine(DATABASE_URI)
+Base = declarative_base()
+
+# Encryption setup for sensitive data
+key = os.getenv('ENCRYPTION_KEY', Fernet.generate_key())
+cipher_suite = Fernet(key)
+
+class StockRecommendation(Base):
+    __tablename__ = 'stock_recommendations'
+    id = Column(Integer, primary_key=True)
+    stock = Column(String)
+    expected_return = Column(Float)
+    recommendation = Column(String)
+    justification = Column(String)
+    volatility = Column(Float)
+    volume = Column(Float)
+    sentiment = Column(Float)
+    momentum = Column(Float)
+    sharpe_ratio = Column(Float)
+    alpha = Column(Float)
+    beta = Column(Float)
+    drawdown = Column(Float)
+    value_at_risk = Column(Float)
+    expected_shortfall = Column(Float)
+    high_risk = Column(Boolean, default=False)
+    metadata = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+Base.metadata.create_all(engine)
+Session = sessionmaker(bind=engine)
+session = Session()
 
 # LSTM Model for Time Series Forecasting with Dropout and Batch Normalization
 def lstm_model(input_shape):
@@ -275,32 +315,57 @@ def perform_operations_and_generate_csv(stocks_data):
         prediction = time_series_forecasting(stock['data'], model_type='lstm')
         expected_return = np.random.uniform(0.5, 1.5)  # Placeholder for predicted return
         if expected_return >= 1.0:
+            recommendation = 'Buy' if expected_return >= 1.0 else 'Short'
+            justification = 'High expected return and positive sentiment'
+            metrics = {
+                'Volatility': np.std(stock['data']),
+                'Volume': np.sum(stock['volume']),
+                'Sentiment': sentiment_analysis_nlp(stock['text']),
+                'Momentum': np.mean(stock['momentum']),
+                'Sharpe Ratio': (expected_return - 0.01) / np.std(stock['data']),
+                'Alpha': np.mean(stock['alpha']),
+                'Beta': np.mean(stock['beta']),
+                'Drawdown': max_drawdown(stock['data']),
+                'Value at Risk (VaR)': calculate_value_at_risk(stock['data']),
+                'Expected Shortfall (CVaR)': calculate_expected_shortfall(stock['data'])
+            }
+            recommendation_data = StockRecommendation(
+                stock=stock['ticker'],
+                expected_return=expected_return,
+                recommendation=recommendation,
+                justification=justification,
+                volatility=metrics['Volatility'],
+                volume=metrics['Volume'],
+                sentiment=metrics['Sentiment'],
+                momentum=metrics['Momentum'],
+                sharpe_ratio=metrics['Sharpe Ratio'],
+                alpha=metrics['Alpha'],
+                beta=metrics['Beta'],
+                drawdown=metrics['Drawdown'],
+                value_at_risk=metrics['Value at Risk'],
+                expected_shortfall=metrics['Expected Shortfall'],
+                metadata={"justification": justification, "calculations": {
+                    "LSTM Prediction": prediction,
+                    "Feature Importance": feature_importance_analysis(model, stock['features'])
+                }}
+            )
+            session.add(recommendation_data)
+            session.commit()
             recommendations.append({
                 'stock': stock['ticker'],
                 'expected_return': expected_return,
-                'recommendation': 'Buy' if expected_return >= 1.0 else 'Short',
-                'justification': 'High expected return and positive sentiment',
-                'calculations': {
-                    'LSTM Prediction': prediction,
-                    'Feature Importance': feature_importance_analysis(model, stock['features'])
-                },
-                'metrics': {
-                    'Volatility': np.std(stock['data']),
-                    'Volume': np.sum(stock['volume']),
-                    'Sentiment': sentiment_analysis_nlp(stock['text']),
-                    'Momentum': np.mean(stock['momentum']),
-                    'Sharpe Ratio': (expected_return - 0.01) / np.std(stock['data']),
-                    'Alpha': np.mean(stock['alpha']),
-                    'Beta': np.mean(stock['beta']),
-                    'Drawdown': max_drawdown(stock['data'])
-                }
+                'recommendation': recommendation,
+                'justification': justification,
+                'LSTM Prediction': prediction,
+                'Feature Importance': feature_importance_analysis(model, stock['features']),
+                'metrics': metrics
             })
         if expected_return >= 2.0:  # Notify if expected return is 100% or more
             notify_high_return(stock['ticker'], expected_return)
 
     # Optimize CSV Generation
     csv_columns = ['stock', 'expected_return', 'recommendation', 'justification', 'LSTM Prediction', 'Feature Importance', 
-                   'Volatility', 'Volume', 'Sentiment', 'Momentum', 'Sharpe Ratio', 'Alpha', 'Beta', 'Drawdown']
+                   'Volatility', 'Volume', 'Sentiment', 'Momentum', 'Sharpe Ratio', 'Alpha', 'Beta', 'Drawdown', 'Value at Risk (VaR)', 'Expected Shortfall (CVaR)']
 
     # Convert recommendations to DataFrame and sort by expected return
     df = pd.DataFrame(recommendations).sort_values(by='expected_return', ascending=False)
@@ -311,15 +376,15 @@ def perform_operations_and_generate_csv(stocks_data):
     df['Alpha vs Beta'] = df['Alpha'] / df['Beta']
     df['Volatility %'] = df['Volatility'] * 100
     df['Return on Equity'] = df['expected_return'] * 100 / df['Alpha']
-    df['Value at Risk (VaR)'] = df.apply(lambda row: calculate_value_at_risk(row['expected_return']), axis=1)
-    df['Expected Shortfall (CVaR)'] = df.apply(lambda row: calculate_expected_shortfall(row['expected_return']), axis=1)
+    df['Risk-Adjusted Return'] = df['Sharpe Ratio'] * df['expected_return']
 
     # Save the enhanced CSV file
-    df.to_csv(f'stock_recommendations_{datetime.now().strftime("%Y%m%d")}.csv', index=False, columns=csv_columns)
+    filename = f'stock_recommendations_{datetime.now().strftime("%Y%m%d")}.csv'
+    df.to_csv(filename, index=False, columns=csv_columns)
 
     # Visualization and Additional Analysis
     visualize_stock_recommendations(df)
-    send_summary_report(df)
+    send_summary_report(df, filename)
 
 # Notification for High Return Stocks
 def notify_high_return(stock, expected_return):
@@ -355,7 +420,7 @@ def visualize_stock_recommendations(df):
     plt.savefig('stock_recommendations.png')
 
 # Send Summary Report via Email
-def send_summary_report(df):
+def send_summary_report(df, filename):
     subject = "Daily Stock Recommendation Summary"
     body = "Attached is the daily stock recommendation summary."
     msg = MIMEMultipart()
@@ -365,10 +430,8 @@ def send_summary_report(df):
     msg.attach(MIMEText(body, 'plain'))
 
     # Attach the CSV file
-    filename = f'stock_recommendations_{datetime.now().strftime("%Y%m%d")}.csv'
-    attachment = open(filename, 'rb')
-    msg.attach(MIMEText(attachment.read(), 'plain'))
-    attachment.close()
+    with open(filename, 'rb') as attachment:
+        msg.attach(MIMEText(attachment.read(), 'plain'))
 
     # Send the email
     with smtplib.SMTP('smtp.gmail.com', 587) as server:
